@@ -238,6 +238,44 @@ bool CN105Climate::processTemperatureChange(const esphome::climate::ClimateCall&
 }
 
 bool CN105Climate::processFanChange(const esphome::climate::ClimateCall& call) {
+    if (this->numeric_fan_modes_) {
+        if (call.has_custom_fan_mode()) {
+            const auto custom_fan_mode = call.get_custom_fan_mode();
+            const char* cn105_fan = nullptr;
+
+            if (strcmp(custom_fan_mode.c_str(), "1") == 0) {
+                cn105_fan = "QUIET";
+            } else if (strcmp(custom_fan_mode.c_str(), "2") == 0) {
+                cn105_fan = "1";
+            } else if (strcmp(custom_fan_mode.c_str(), "3") == 0) {
+                cn105_fan = "2";
+            } else if (strcmp(custom_fan_mode.c_str(), "4") == 0) {
+                cn105_fan = "3";
+            } else if (strcmp(custom_fan_mode.c_str(), "5") == 0) {
+                cn105_fan = "4";
+            }
+
+            if (cn105_fan == nullptr) {
+                ESP_LOGW("control", "Unsupported numeric fan mode: %s", custom_fan_mode.c_str());
+                return false;
+            }
+
+            ESP_LOGD("control", "Numeric fan change asked: %s", custom_fan_mode.c_str());
+            this->set_custom_fan_mode_(custom_fan_mode);
+            this->setFanSpeed(cn105_fan);
+            return true;
+        }
+
+        if (call.get_fan_mode().has_value() &&
+            *call.get_fan_mode() == climate::CLIMATE_FAN_AUTO) {
+            ESP_LOGD("control", "Numeric fan change asked: auto");
+            this->set_fan_mode_(climate::CLIMATE_FAN_AUTO);
+            this->setFanSpeed("AUTO");
+            return true;
+        }
+        return false;
+    }
+
     if (!call.get_fan_mode().has_value()) {
         return false;
     }
