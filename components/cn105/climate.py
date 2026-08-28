@@ -70,6 +70,7 @@ AUTO_LOAD = [
 DEPENDENCIES = ["uart"]  # Garder uart ici aussi
 
 CONF_SUPPORTS = "supports"
+CONF_NUMERIC_FAN_MODES = "numeric_fan_modes"
 CONF_SUPPORTS_HORIZONTAL_VANE_MODE = "horizontal_vane_mode"
 CONF_HORIZONTAL_VANES = "horizontal_vanes"
 CONF_VANE_TYPE = "vane_type"
@@ -440,6 +441,7 @@ CONFIG_SCHEMA = (
             cv.Optional(CONF_POWER_UNIT_IS_BTU, default=False): cv.boolean,
             cv.Optional(CONF_SUPPORTS, default={}): cv.Schema(
                 {
+                    cv.Optional(CONF_NUMERIC_FAN_MODES, default=False): cv.boolean,
                     cv.Optional(
                         CONF_MODE, default=DEFAULT_CLIMATE_MODES
                     ): cv.ensure_list(climate.validate_climate_mode),
@@ -539,13 +541,22 @@ def to_code(config):
         # ESPHome's default behavior for modes like COOL/HEAT is to enable single-point target temperature.
         # We don't need to explicitly force single-point or clear the dual flag (it's off by default).
 
-        for fan_mode_str in supports.get(CONF_FAN_MODE, DEFAULT_FAN_MODES):
-            if fan_mode_str in climate.CLIMATE_FAN_MODES:
-                cg.add(
-                    traits.add_supported_fan_mode(
-                        climate.CLIMATE_FAN_MODES[fan_mode_str]
+        numeric_fan_modes = supports.get(CONF_NUMERIC_FAN_MODES, False)
+        cg.add(var.set_numeric_fan_modes(numeric_fan_modes))
+        if numeric_fan_modes:
+            # "auto" remains a native ESPHome fan mode. Levels 1-5 are custom
+            # modes matching MELCloud's user-facing numbering.
+            cg.add(
+                traits.add_supported_fan_mode(climate.CLIMATE_FAN_MODES["AUTO"])
+            )
+        else:
+            for fan_mode_str in supports.get(CONF_FAN_MODE, DEFAULT_FAN_MODES):
+                if fan_mode_str in climate.CLIMATE_FAN_MODES:
+                    cg.add(
+                        traits.add_supported_fan_mode(
+                            climate.CLIMATE_FAN_MODES[fan_mode_str]
+                        )
                     )
-                )
         for swing_mode_str in supports.get(CONF_SWING_MODE, DEFAULT_SWING_MODES):
             if swing_mode_str in climate.CLIMATE_SWING_MODES:
                 cg.add(
