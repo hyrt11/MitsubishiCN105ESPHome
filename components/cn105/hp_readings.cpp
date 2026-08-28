@@ -723,23 +723,45 @@ void CN105Climate::checkFanSettings(heatpumpSettings& settings, bool updateCurre
             currentSettings.fan = settings.fan;
         }
 
-        if (strcmp(settings.fan, "QUIET") == 0) {
-            this->fan_mode = climate::CLIMATE_FAN_QUIET;
-        } else if (strcmp(settings.fan, "1") == 0) {
-            this->fan_mode = climate::CLIMATE_FAN_LOW;
-        } else if (strcmp(settings.fan, "2") == 0) {
-            this->fan_mode = climate::CLIMATE_FAN_MEDIUM;
-        } else if (strcmp(settings.fan, "3") == 0) {
-            this->fan_mode = climate::CLIMATE_FAN_MIDDLE;
-        } else if (strcmp(settings.fan, "4") == 0) {
-            this->fan_mode = climate::CLIMATE_FAN_HIGH;
-        } else { //case "AUTO" or default:
-            this->fan_mode = climate::CLIMATE_FAN_AUTO;
-        }
-        if (this->fan_mode.has_value()) {
-            ESP_LOGD(TAG, "Fan mode is: %i", static_cast<int>(this->fan_mode.value()));
+        if (this->numeric_fan_modes_) {
+            if (strcmp(settings.fan, "QUIET") == 0) {
+                this->set_custom_fan_mode_("1");
+            } else if (strcmp(settings.fan, "1") == 0) {
+                this->set_custom_fan_mode_("2");
+            } else if (strcmp(settings.fan, "2") == 0) {
+                this->set_custom_fan_mode_("3");
+            } else if (strcmp(settings.fan, "3") == 0) {
+                this->set_custom_fan_mode_("4");
+            } else if (strcmp(settings.fan, "4") == 0) {
+                this->set_custom_fan_mode_("5");
+            } else { // case "AUTO" or default
+                this->set_fan_mode_(climate::CLIMATE_FAN_AUTO);
+            }
+
+            if (this->has_custom_fan_mode()) {
+                ESP_LOGD(TAG, "Numeric fan mode is: %s", this->get_custom_fan_mode().c_str());
+            } else {
+                ESP_LOGD(TAG, "Numeric fan mode is: auto");
+            }
         } else {
-            ESP_LOGD(TAG, "Fan mode is not set");
+            if (strcmp(settings.fan, "QUIET") == 0) {
+                this->fan_mode = climate::CLIMATE_FAN_QUIET;
+            } else if (strcmp(settings.fan, "1") == 0) {
+                this->fan_mode = climate::CLIMATE_FAN_LOW;
+            } else if (strcmp(settings.fan, "2") == 0) {
+                this->fan_mode = climate::CLIMATE_FAN_MEDIUM;
+            } else if (strcmp(settings.fan, "3") == 0) {
+                this->fan_mode = climate::CLIMATE_FAN_MIDDLE;
+            } else if (strcmp(settings.fan, "4") == 0) {
+                this->fan_mode = climate::CLIMATE_FAN_HIGH;
+            } else { //case "AUTO" or default:
+                this->fan_mode = climate::CLIMATE_FAN_AUTO;
+            }
+            if (this->fan_mode.has_value()) {
+                ESP_LOGD(TAG, "Fan mode is: %i", static_cast<int>(this->fan_mode.value()));
+            } else {
+                ESP_LOGD(TAG, "Fan mode is not set");
+            }
         }
     }
 }
