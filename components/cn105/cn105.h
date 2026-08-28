@@ -287,6 +287,14 @@ namespace esphome {
         // Opt-in (supports.restore_setpoints): persist HEAT_COOL band across reboots
         void set_restore_setpoints(bool v) { this->restore_setpoints_ = v; }
 
+        // Opt-in: expose fan speeds as auto + 1..5, matching MELCloud.
+        void set_numeric_fan_modes(bool enabled) {
+            this->numeric_fan_modes_ = enabled;
+            if (enabled) {
+                this->set_supported_custom_fan_modes({"1", "2", "3", "4", "5"});
+            }
+        }
+
         // Configure the climate object with traits that we support.
 
 
@@ -550,6 +558,7 @@ namespace esphome {
         bool installer_mode_fallback_done_{ false };
         bool power_unit_is_btu_{ false };  // true = la PAC envoie en BTU/s (nÃÂ©cessite conversion ÃÂ3.412)
         bool supports_dual_setpoint_ = false;
+        bool numeric_fan_modes_{ false };
         int horizontal_vanes_{ 1 }; // Kept for legacy logging if needed, or can be removed if unused.
         VaneType vane_type_{ VaneType::STANDARD };
 
