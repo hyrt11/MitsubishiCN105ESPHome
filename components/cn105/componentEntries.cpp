@@ -19,7 +19,11 @@ void CN105Climate::setup() {
     this->target_temperature = NAN;
     this->target_temperature_low = NAN;
     this->target_temperature_high = NAN;
-    this->fan_mode = climate::CLIMATE_FAN_OFF;
+    if (this->numeric_fan_modes_) {
+        this->set_fan_mode_(climate::CLIMATE_FAN_AUTO);
+    } else {
+        this->fan_mode = climate::CLIMATE_FAN_OFF;
+    }
     this->swing_mode = climate::CLIMATE_SWING_OFF;
     this->parser_.reset();
     this->lastResponseMs = CUSTOM_MILLIS;
