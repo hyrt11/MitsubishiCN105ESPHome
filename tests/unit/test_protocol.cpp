@@ -136,16 +136,16 @@ TEST(ProtocolEncodeRemoteTemp, KeepAlive_20_9C) {
     uint8_t enc_a, enc_b;
     encode_remote_temperature(20.9f, enc_a, enc_b);
     // round(20.9*2) = round(41.8) = 42
-    // enc_a = 42 - 16 = 26 = 0x1A
+    // enc_a = 42 - 17 = 25 = 0x19
     // enc_b = 42 + 128 = 170 = 0xAA
-    EXPECT_EQ(enc_a, 0x1A);
+    EXPECT_EQ(enc_a, 0x19);
     EXPECT_EQ(enc_b, 0xAA);
 }
 
 TEST(ProtocolEncodeRemoteTemp, Exact_21_0C) {
     uint8_t enc_a, enc_b;
     encode_remote_temperature(21.0f, enc_a, enc_b);
-    EXPECT_EQ(enc_a, 0x1A);  // 42 - 16
+    EXPECT_EQ(enc_a, 0x19);  // 42 - 17
     EXPECT_EQ(enc_b, 0xAA);  // 42 + 128
 }
 
@@ -153,8 +153,25 @@ TEST(ProtocolEncodeRemoteTemp, Low_10_0C) {
     uint8_t enc_a, enc_b;
     encode_remote_temperature(10.0f, enc_a, enc_b);
     // round(10.0*2) = 20
-    EXPECT_EQ(enc_a, 0x04);  // 20 - 16
+    EXPECT_EQ(enc_a, 0x03);  // 20 - 17
     EXPECT_EQ(enc_b, 0x94);  // 20 + 128
+}
+
+TEST(ProtocolEncodeRemoteTemp, RoundTrip_AllHalfSteps_BothEncodingsAgree) {
+    for (float t = 10.0f; t <= 31.5f; t += 0.5f) {
+        uint8_t enc_a = 0, enc_b = 0;
+        encode_remote_temperature(t, enc_a, enc_b);
+
+        // Encoding B: (enc_b - 128) / 2.0 == t
+        float decoded_b = decode_temperature(0x00, enc_b);
+        EXPECT_FLOAT_EQ(decoded_b, t) << "Encoding B roundtrip failed for " << t << "°C";
+
+        // Encoding A (legacy 0.5°C steps starting at 10.0°C = 0x03):
+        // 10.0 + (enc_a - 3) / 2.0 == t
+        float decoded_a = 10.0f + static_cast<float>(enc_a - 3) / 2.0f;
+        EXPECT_FLOAT_EQ(decoded_a, t) << "Encoding A roundtrip failed for " << t << "°C";
+        EXPECT_FLOAT_EQ(decoded_a, decoded_b) << "Encodings A and B disagree for " << t << "°C";
+    }
 }
 
 // ════════════════════════════════════════════════════════════════
@@ -318,6 +335,85 @@ TEST(ProtocolLookupIndexOpt, StringCaseInsensitive) {
 TEST(ProtocolLookupIndexOpt, StringNotFound) {
     auto result = lookup_index_opt(MODE_MAP, 5, "TURBO");
     EXPECT_FALSE(result.has_value());
+}
+
+// ════════════════════════════════════════════════════════════════
+// SUB_MODE table — 0x10 is OFF (issue #668)
+// ════════════════════════════════════════════════════════════════
+
+TEST(ProtocolLookupOpt, SubModeNormal) {
+    auto result = lookup_value_opt(SUB_MODE_MAP, SUB_MODE, 6, 0x00);
+    ASSERT_TRUE(result.has_value());
+    EXPECT_STREQ(*result, "NORMAL");
+}
+
+TEST(ProtocolLookupOpt, SubModeOffIs16) {
+    // 0x10 / decimal 16: observed on MFZ units when powered off (data[3] of 0x09).
+    // Mapping is evidence-backed; do not treat 16 as unknown.
+    auto result = lookup_value_opt(SUB_MODE_MAP, SUB_MODE, 6, 16);
+    ASSERT_TRUE(result.has_value());
+    EXPECT_STREQ(*result, "OFF");
+}
+
+TEST(ProtocolLookupOpt, SubModeUnknownReturnsNullopt) {
+    // e.g. 0x20: keep previous value at the call site, do not invent a label.
+    auto result = lookup_value_opt(SUB_MODE_MAP, SUB_MODE, 6, 0x20);
+    EXPECT_FALSE(result.has_value());
+}
+
+TEST(ProtocolLookup, SubModeOffFallbackValue) {
+    EXPECT_STREQ(lookup_value(SUB_MODE_MAP, SUB_MODE, 6, 0x10), "OFF");
+}
+
+// ════════════════════════════════════════════════════════════════
+// first_unknown_lookup() — log-once helper for #668
+// ════════════════════════════════════════════════════════════════
+
+TEST(UnknownLookupLog, FirstObservationLogs) {
+    unknown_lookup_cache cache;
+    EXPECT_TRUE(first_unknown_lookup(cache, "submode", 16));
+}
+
+TEST(UnknownLookupLog, RepeatSamePairIsSilent) {
+    unknown_lookup_cache cache;
+    EXPECT_TRUE(first_unknown_lookup(cache, "submode", 16));
+    EXPECT_FALSE(first_unknown_lookup(cache, "submode", 16));
+    EXPECT_FALSE(first_unknown_lookup(cache, "submode", 16));
+}
+
+TEST(UnknownLookupLog, DifferentValueLogsAgain) {
+    unknown_lookup_cache cache;
+    EXPECT_TRUE(first_unknown_lookup(cache, "submode", 16));
+    EXPECT_TRUE(first_unknown_lookup(cache, "submode", 32));
+    EXPECT_FALSE(first_unknown_lookup(cache, "submode", 16));
+}
+
+TEST(UnknownLookupLog, DifferentLabelLogsAgain) {
+    unknown_lookup_cache cache;
+    EXPECT_TRUE(first_unknown_lookup(cache, "submode", 16));
+    EXPECT_TRUE(first_unknown_lookup(cache, "stage", 16));
+    EXPECT_FALSE(first_unknown_lookup(cache, "submode", 16));
+}
+
+TEST(UnknownLookupLog, CacheFullStopsLogging) {
+    unknown_lookup_cache cache;
+    for (int i = 0; i < kUnknownLookupCacheSize; i++) {
+        EXPECT_TRUE(first_unknown_lookup(cache, "submode", i)) << "i=" << i;
+    }
+    EXPECT_FALSE(first_unknown_lookup(cache, "submode", 99));
+    // Already-seen pairs stay silent even when the cache is full.
+    EXPECT_FALSE(first_unknown_lookup(cache, "submode", 0));
+}
+
+TEST(UnknownLookupLog, DistinctPointersWithSameTextAreDistinct) {
+    // Documented contract: labels are compared by pointer, not strcmp.
+    // Production callers pass string literals from one TU.
+    unknown_lookup_cache cache;
+    char a[] = "submode";
+    char b[] = "submode";
+    ASSERT_NE(static_cast<const char*>(a), static_cast<const char*>(b));
+    EXPECT_TRUE(first_unknown_lookup(cache, a, 16));
+    EXPECT_TRUE(first_unknown_lookup(cache, b, 16));
 }
 
 // ════════════════════════════════════════════════════════════════

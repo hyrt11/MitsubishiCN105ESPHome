@@ -25,7 +25,7 @@ void CN105Climate::set_vertical_vane_select(
 
     this->vertical_vane_select_->setCallbackFunction([this](const char* setting) {
 
-        ESP_LOGD("EVT", "vane.control() -> Demande un chgt de rÃ©glage de la vane: %s", setting);
+        ESP_LOGD("EVT", "vane.control() -> Demande un chgt de réglage de la vane: %s", setting);
 
         this->setVaneSetting(setting);
         this->wantedSettings.hasChanged = true;
@@ -52,16 +52,13 @@ void CN105Climate::set_horizontal_vane_select(
         this->horizontal_vane_options_strings_.assign(std::begin(WIDEVANE_MAP), std::end(WIDEVANE_MAP));
     }
 
-    // Build FixedVector of const char* for set_options
-    FixedVector<const char*> fixedOptions;
-    fixedOptions.init(this->horizontal_vane_options_strings_.size());
-    for (const auto& str : this->horizontal_vane_options_strings_) {
-        fixedOptions.push_back(str.c_str());
-    }
-    this->horizontal_vane_select_->traits.set_options(fixedOptions);
+    // SelectTraits::set_options takes FixedVector on ESPHome 2025.11+ and
+    // std::vector<std::string> on older releases (#733).
+    cn105_set_select_options(this->horizontal_vane_select_->traits,
+                             this->horizontal_vane_options_strings_);
 
     this->horizontal_vane_select_->setCallbackFunction([this](const char* setting) {
-        ESP_LOGD("EVT", "wideVane.control() -> Demande un chgt de rÃ©glage de la wideVane: %s", setting);
+        ESP_LOGD("EVT", "wideVane.control() -> Demande un chgt de réglage de la wideVane: %s", setting);
 
         this->setWideVaneSetting(setting);
         this->wantedSettings.hasChanged = true;
@@ -80,7 +77,7 @@ void CN105Climate::set_airflow_control_select(
         });
 
     this->airflow_control_select_->setCallbackFunction([this](const char* setting) {
-        if (strcmp(this->currentSettings.wideVane, lookupByteMapValue(WIDEVANE_MAP, WIDEVANE, 8, 0x80 & 0x0F)) == 0) {
+        if (this->profile_->can_control_airflow()) {
             ESP_LOGD("EVT", "airFlow -> Request for change of airflow control setting: %s", setting);
 
             this->setAirflowControlSetting(setting);
@@ -88,7 +85,10 @@ void CN105Climate::set_airflow_control_select(
             this->wantedRunStates.hasBeenSent = false;
             this->wantedRunStates.lastChange = CUSTOM_MILLIS;
         } else {
-            this->airflow_control_select_->publish_state(this->currentRunStates.airflow_control);
+            // Re-publish current state; guard against null (not yet received from heat pump)
+            if (this->currentRunStates.airflow_control != nullptr) {
+                this->airflow_control_select_->publish_state(this->currentRunStates.airflow_control);
+            }
         }
         });
 }
@@ -96,6 +96,12 @@ void CN105Climate::set_airflow_control_select(
 void CN105Climate::set_compressor_frequency_sensor(
     sensor::Sensor* compressor_frequency_sensor) {
     this->compressor_frequency_sensor_ = compressor_frequency_sensor;
+}
+
+void CN105Climate::set_compressor_frequency_report_when_idle(bool value) {
+    this->compressor_frequency_report_when_idle_ = value;
+    // Prevent warning since property in YAML.
+    this->compressor_frequency_report_when_idle_warning_shown_ = true;
 }
 
 void CN105Climate::set_target_humidity_sensor(

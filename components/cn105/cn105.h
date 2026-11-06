@@ -1,6 +1,8 @@
 #pragma once
 #include "Globals.h"
+#include "esphome_compat.h"
 #include "cn105_protocol.h"
+#include "protocol_profile.h"
 #include "frame_parser.h"
 #include "esphome/components/uart/uart.h"
 #include "heatpumpFunctions.h"
@@ -39,6 +41,7 @@
 #endif
 
 namespace esphome {
+    namespace cn105 { class HeatPumpProfile; class LossnayProfile; }
 
     // Connection lifecycle FSM — replaces 6 scattered booleans
     enum class DriverState : uint8_t {
@@ -61,7 +64,10 @@ namespace esphome {
 
     public:
 
-        CN105Climate(uart::UARTComponent* hw_serial);
+        CN105Climate(uart::UARTComponent* hw_serial, bool lossnay = false);
+
+        // Expose the existing polling-cycle state to ESPHome lambda conditions.
+        bool isCycleRunning() { return this->loopCycle.isCycleRunning(); }
 
         enum class VaneType {
             STANDARD = 0,
@@ -73,6 +79,7 @@ namespace esphome {
         void set_horizontal_vane_select(VaneOrientationSelect* horizontal_vane_select, const std::vector<std::string>& options = {});
         void set_airflow_control_select(VaneOrientationSelect* airflow_control_select);
         void set_compressor_frequency_sensor(esphome::sensor::Sensor* compressor_frequency_sensor);
+        void set_compressor_frequency_report_when_idle(bool value);
         void set_target_humidity_sensor(esphome::sensor::Sensor* target_humidity_sensor);
         void set_input_power_sensor(esphome::sensor::Sensor* input_power_sensor);
         void set_kwh_sensor(esphome::sensor::Sensor* kwh_sensor);
@@ -136,6 +143,8 @@ namespace esphome {
         HVACOptionSwitch* circulator_switch_ = nullptr;
         std::vector<HardwareSettingSelect*> hardware_settings_;
         uint32_t hardware_settings_interval_ms_{ 86400000 };  // Default 24h
+        bool compressor_frequency_report_when_idle_{ false };
+        bool compressor_frequency_report_when_idle_warning_shown_{ false };
 
         // The value of the code and value for the functions set.
         int functions_code_;
@@ -188,7 +197,7 @@ namespace esphome {
 
 
         float get_setup_priority() const override {
-            return setup_priority::AFTER_WIFI;  // Configurez ce composant aprÃÂ¨s le WiFi
+            return setup_priority::AFTER_WIFI;  // Configurez ce composant après le WiFi
         }
 
         void generateExtraComponents();
@@ -266,22 +275,23 @@ namespace esphome {
 
         void controlFan();
         void controlSwing();
-        // Bootstrap connexion CN105 en loop() (ÃÂ©vite de perdre les tout premiers logs OTA)
+        // Bootstrap connexion CN105 en loop() (évite de perdre les tout premiers logs OTA)
         void maybe_start_connection_();
 
-        // DÃÂ©lai de grÃÂ¢ce configurable avant d'envoyer CONNECT (pour laisser le flux OTA s'attacher)
+        // Délai de grâce configurable avant d'envoyer CONNECT (pour laisser le flux OTA s'attacher)
         void set_connection_bootstrap_delay(uint32_t delay_ms) { this->conn_bootstrap_delay_ms_ = delay_ms; }
 
-        // Mode installateur: utilise un handshake CONNECT ÃÂ©tendu (0x5B) au lieu du standard (0x5A)
+
+        // Mode installateur: utilise un handshake CONNECT étendu (0x5B) au lieu du standard (0x5A)
         void set_installer_mode(bool mode) {
-            // Mode demandÃÂ© via YAML
+            // Mode demandé via YAML
             this->installer_mode_ = mode;
-            // Mode effectivement utilisÃÂ©: peut tomber en fallback vers standard si la PAC ignore 0x5B
-            this->installer_mode_effective_ = mode;
+            // Mode effectivement utilisé: peut tomber en fallback vers standard si la PAC ignore 0x5B
+            this->installer_mode_effective_ = mode && this->profile_->supports(cn105::ProfileFeature::INSTALLER_MODE);
             this->installer_mode_fallback_done_ = false;
         }
 
-        // UnitÃÂ© de puissance brute envoyÃÂ©e par la PAC: false = Watts (dÃÂ©faut), true = BTU/s
+        // Unité de puissance brute envoyée par la PAC: false = Watts (défaut), true = BTU/s
         void set_power_unit_is_btu(bool v) { this->power_unit_is_btu_ = v; }
 
         // Opt-in (supports.restore_setpoints): persist HEAT_COOL band across reboots
@@ -355,7 +365,6 @@ namespace esphome {
         void processDataPacket();
         void getErrorInfoFromResponsePacket();
     void getDataFromResponsePacket();
-        void getAutoModeStateFromResponsePacket(); //NET added
         void getPowerFromResponsePacket(); //NET added
         void getSettingsFromResponsePacket();
         void getRoomTemperatureFromResponsePacket();
@@ -388,7 +397,13 @@ namespace esphome {
         void setHeatpumpConnected(bool state);
 
     private:
+        friend struct cn105::CommonProtocol;
+        friend class cn105::HeatPumpProfile;
+        friend class cn105::LossnayProfile;
+        std::unique_ptr<cn105::Cn105ProtocolProfile> profile_;
         void force_low_level_uart_reinit();
+        void handleConnectionSuccess();
+
         int uart_port_ = -1;
         const char* lookupByteMapValue(const char* valuesMap[], const uint8_t byteMap[], int len, uint8_t byteValue, const char* debugInfo = "", const char* defaultValue = nullptr);
         int lookupByteMapValue(const int valuesMap[], const uint8_t byteMap[], int len, uint8_t byteValue, const char* debugInfo = "");
@@ -409,36 +424,12 @@ namespace esphome {
 
         void checkPendingWantedSettings();
         void checkPendingWantedRunStates();
-        void checkPowerAndModeSettings(heatpumpSettings& settings, bool updateCurrentSettings = true);
-        void checkFanSettings(heatpumpSettings& settings, bool updateCurrentSettings = true);
-        void checkVaneSettings(heatpumpSettings& settings, bool updateCurrentSettings = true);
-        void checkWideVaneSettings(heatpumpSettings& settings, bool updateCurrentSettings = true);
-        //        void checkAirflowControlSettings(heatpumpRunStates& settings, bool updateCurrentSettings = true);
-        void updateExtraSelectComponents(heatpumpSettings& settings);
-        void updateTargetTemperaturesFromSettings(float temperature);
 
-        // Composed method helpers — temperature decoding
-        float decodeSettingsTemperature(const uint8_t* data);
-
-        // Composed method helpers — setpoint grace window
-        bool shouldApplyIncomingSetpoint(const heatpumpSettings& settings);
-        bool hasPendingUserTemperature() const;
-        bool isWithinPostSendGrace() const;
-        bool disagreesWithLastUserSetpoint(float incoming) const;
-
-        // Composed method helpers — vane grace window
-        bool shouldIgnoreIncomingVane(const heatpumpSettings& settings) const;
-
-        // Composed method helpers — packet building
-        void applyVaneToPacket(uint8_t* packet);
-        const char* vaneSettingForPacket() const;
 
         //void statusChanged();
         void updateAction();
-        void setActionIfOperatingTo(climate::ClimateAction action);
-        void setActionIfOperatingAndCompressorIsActiveTo(climate::ClimateAction action);
+
         void hpPacketDebug(const uint8_t* packet, unsigned int length, const char* packetDirection, const char* log_prefix = "");
-        void hpFunctionsDebug(uint8_t* packet, unsigned int length);
 
         void debugSettings(const char* settingName, heatpumpSettings& settings);
         void debugSettings(const char* settingName, wantedHeatpumpSettings& settings);
@@ -450,8 +441,6 @@ namespace esphome {
         void emulateMutex(const char* retryName, std::function<void()>&& f);
 #endif
 
-
-
         void controlDelegate(const esphome::climate::ClimateCall& call);
         // Refactor helpers for controlDelegate
         bool processModeChange(const esphome::climate::ClimateCall& call);
@@ -459,12 +448,6 @@ namespace esphome {
         bool processFanChange(const esphome::climate::ClimateCall& call);
         bool processSwingChange(const esphome::climate::ClimateCall& call);
         void finalizeControlIfUpdated(bool updated);
-        // Temperature handling helpers (dual setpoint variants)
-        void handleDualSetpointBoth(float low, float high);
-        void handleDualSetpointLowOnly(float low);
-        void handleDualSetpointHighOnly(float high);
-        void handleSingleTargetInAutoOrDry(float requested);
-
         void createPacket(uint8_t* packet);
         void createInfoPacket(uint8_t* packet, uint8_t code);
         heatpumpSettings currentSettings{};
@@ -473,7 +456,7 @@ namespace esphome {
         wantedHeatpumpRunStates wantedRunStates{};
         cycleManagement loopCycle{};
 
-        // Orchestrateur des requÃÂªtes INFO
+        // Orchestrateur des requêtes INFO
         RequestScheduler scheduler_;
         void registerInfoRequests();
         void registerHardwareSettingsRequests();
@@ -500,8 +483,6 @@ namespace esphome {
         int tx_pin_ = -1;
         int rx_pin_ = -1;
 
-
-
         //HardwareSerial* _HardSerial{ nullptr };
         unsigned long lastSend;
         unsigned long lastConnectRqTimeMs;
@@ -514,10 +495,7 @@ namespace esphome {
         heatpumpStatus currentStatus{};
         heatpumpFunctions functions;
 
-        bool use_temperature_encoding_b_ = false;
-        bool use_temperature_encoding_b_latched_ = false;  // Once encoding B is detected, stay latched
         bool use_msz_a24na_setpoint_table_ = false;
-        bool wideVaneAdj;
         bool autoUpdate;
         bool firstRun;
         int infoMode;
@@ -534,14 +512,7 @@ namespace esphome {
 
         // foundStart, bytesRead, dataLength, command → moved into parser_ (Phase 3A)
 
-        // Ensure dual setpoints are valid (no NaN, enforce spread in AUTO)
-        void sanitizeDualSetpoints();
-
-        // Anti-rebond UI: mÃÂ©morise le dernier cÃÂ´tÃÂ© modifiÃÂ© et l'instant
-        uint32_t last_dual_setpoint_change_ms_ = 0;
-        char last_dual_setpoint_side_ = 'N'; // 'L' (low), 'H' (high), 'N' (none)
-
-        // Gestion sÃÂ»re d'un paquet diffÃÂ©rÃÂ© ÃÂ  ÃÂ©crire pour ÃÂ©viter la capture d'un buffer de pile
+        // Gestion sûre d'un paquet différé à écrire pour éviter la capture d'un buffer de pile
         void try_write_pending_packet();
         uint8_t pending_packet_[PACKET_LEN] = {};
         int pending_packet_len_ = 0;
@@ -551,12 +522,13 @@ namespace esphome {
         // Connection lifecycle FSM
         DriverState state_ = DriverState::BOOT;
         uint32_t boot_ms_ = 0;
-        uint32_t conn_bootstrap_delay_ms_{ 10000 };  // par dÃÂ©faut 10s
+        uint32_t conn_bootstrap_delay_ms_{ 10000 };  // par défaut 10s
 
         bool installer_mode_{ false };
         bool installer_mode_effective_{ false };
         bool installer_mode_fallback_done_{ false };
-        bool power_unit_is_btu_{ false };  // true = la PAC envoie en BTU/s (nÃÂ©cessite conversion ÃÂ3.412)
+
+        bool power_unit_is_btu_{ false };  // true = la PAC envoie en BTU/s (conversion ×3600/1055.056 ≈ ×3.412)
         bool supports_dual_setpoint_ = false;
         bool numeric_fan_modes_{ false };
         int horizontal_vanes_{ 1 }; // Kept for legacy logging if needed, or can be removed if unused.
@@ -566,15 +538,7 @@ namespace esphome {
         // The dual-setpoint band is synthetic (the heat pump only stores a single setpoint),
         // so it is lost on reboot. When enabled, we persist {mode, low, high} to flash and
         // re-seed it in setup() before the first settings read.
-        struct SetpointState {
-            uint8_t version;
-            uint8_t mode;        // climate::ClimateMode
-            float target_low;
-            float target_high;
-        } __attribute__((packed));
         bool restore_setpoints_ = false;
-        esphome::ESPPreferenceObject setpoint_pref_;
-        bool setpoint_pref_ready_ = false;
         void restore_setpoint_state_();
         void save_setpoint_state_();
     };

@@ -1,12 +1,12 @@
 # Mitsubishi CN105 ESPHome
 
-This project is a firmware for ESP32 microcontrollers supporting UART communication via the CN105 Mitsubishi connector. Its purpose is to enable complete control of a compatible Mitsubishi heat pump through Home Assistant, a web interface, or any MQTT client.
+This project is a firmware for ESP32 microcontrollers supporting UART communication via the CN105 Mitsubishi connector. Its purpose is to enable complete control of a compatible Mitsubishi heat pump or Lossnay through Home Assistant, a web interface, or any MQTT client.
 
 It uses the ESPHome framework and is compatible with the Arduino framework and ESP-IDF.
 
 This component version is an adaptation of [geoffdavis's esphome-mitsubishiheatpump](https://github.com/geoffdavis/esphome-mitsubishiheatpump). Its purpose is to integrate the Mitsubishi heat pump protocol (enabled by the [SwiCago library](https://github.com/SwiCago/HeatPump)) directly into the ESPHome component classes for a more seamless integration.
 
-The intended use case is for owners of a Mitsubishi Electric heat pump or air conditioner that includes a CN105 communication port to directly control their air handler or indoor unit using local communication through a web browser, or most commonly, the [HomeAssistant](https://www.home-assistant.io/) home automation platform. Installation requires the use of a WiFi capable ESP32 or ESP8266 device, modified to include a 5 pin plug to connect to the heat pump indoor unit. ESPHome is used to load the custom firmware onto the device, and the web browser or HomeAssistant software is used to send temperature setpoints, external temperature references, and settings to the heat pump. Installation requires basic soldering skills, and basic skills in flashing a firmware to a microcontroller (though ESPHome makes this as painless as possible).
+The intended use case is for owners of a Mitsubishi Electric heat pump, air conditioner, or Lossnay that includes a CN105 communication port to directly control their air handler or indoor unit using local communication through a web browser, or most commonly, the [HomeAssistant](https://www.home-assistant.io/) home automation platform. Installation requires a WiFi capable ESP32 or ESP8266 device, a bidirectional logic level shifter, and a 5-pin plug to connect to the heat pump indoor unit. ESPHome is used to load the custom firmware onto the device, and the web browser or HomeAssistant software is used to send temperature setpoints, external temperature references, and settings to the heat pump. Installation requires basic soldering skills, and basic skills in flashing a firmware to a microcontroller (though ESPHome makes this as painless as possible).
 
 The benefits include fully local control over your heat pump system, without reliance on a vendor network. Additional visibility, finer control, and even improved energy efficiency and comfort are possible when utilizing the remote temperature features.
 
@@ -27,6 +27,7 @@ The benefits include fully local control over your heat pump system, without rel
 - Enhanced UART communication with the Heatpump to eliminate delays in the ESPHome loop(), which was a limitation of the original [SwiCago library](https://github.com/SwiCago/HeatPump).
 - Byte-by-byte reading within the loop() function ensures no data loss or lag, as the component continuously reads without blocking ESPHome.
 - UART writes are followed by non-blocking reads. The responses are accumulated byte-by-byte in the loop() method and processed when complete, allowing command stacking without delays for a more responsive UI.
+- Support for Lossnay heat recovery ventilation systems
 
 ### Retained Features
 
@@ -41,7 +42,7 @@ This project maintains all functionalities of the original [geoffdavis](https://
 
 ## Requirements
 
-- [ESPHome](https://esphome.io/) - Minimum version 1.18.0, installed independently or as an add-on in HomeAssistant
+- [ESPHome](https://esphome.io/) — **2025.7 or later**. ESPHome **2025.11+** is recommended (native `ClimateTraits` feature flags and `FixedVector` select options). 2025.7–2025.10 remain buildable via compile-time API shims (see issue #733). Install independently or as a Home Assistant add-on.
 
 ## Supported Microcontrollers
 
@@ -84,11 +85,54 @@ Units tested by project contributors include:
 - `SEZ-M50DAL`
 - `MSZ-A24NA` (See `msz_a24na_setpoint_table` and `fahrenheit_compatibility`)
 
+Known working Lossnay units using `lossnay: true`:
+
+- `LGH-50RVS-E`
+- `VL-350CZPVU-L-E`
+
 ## Usage
 
 ### Step 1: Building the Control Circuit
 
-Follow the [SwiCago/HeatPump README](https://github.com/SwiCago/HeatPump/blob/master/README.md#demo-circuit) for building a control circuit using either an ESP8266 or ESP32.
+The CN105 port is a **5V TTL UART** (2400 baud). ESP32 (and ESP8266) GPIO pins are **3.3V**. The proper way to hook them up is a **bidirectional logic level shifter** on the TX and RX lines. Do not wire the heat pump UART directly to the ESP32 GPIO pins because the ESP32 GPIO pins are not 5V tolerant.
+
+The indoor unit also supplies 5V on CN105. The ESP32 can be powered from that 5V rail via the board's `5V` pin, so a separate USB supply is not required once the device is installed.
+
+#### Circuit diagram
+
+The diagram below shows a Seeed Studio XIAO ESP32-C6 with a 4-channel bidirectional level shifter. The same wiring applies to other ESP32 boards: use that board's `5V`, `GND`, `3V3`, UART TX, and UART RX pins (and match `tx_pin` / `rx_pin` in your ESPHome YAML).
+
+![CN105 to ESP32 via bidirectional level shifter. The ESP32 5V pin is powered from the CN105 5V supply.](docs/cn105-esp32-level-shifter.jpg)
+
+#### Wiring
+
+| CN105 (5V side) | Level shifter | ESP32 (3.3V side) | Notes |
+| --------------- | ------------- | ----------------- | ----- |
+| 5V              | `HV`          | `5V`              | Powers both the shifter HV rail and the ESP32 |
+| GND             | `GND` (HV and LV) | `GND`         | Common ground |
+| —               | `LV`          | `3V3`             | 3.3V reference for the shifter LV rail |
+| RX (into HVAC)  | `HV1` ↔ `LV1` | UART TX           | ESP32 TX is shifted up to 5V |
+| TX (from HVAC)  | `HV2` ↔ `LV2` | UART RX           | HVAC TX is shifted down to 3.3V |
+| 12V             | —             | —                 | Leave disconnected |
+
+TX and RX must be crossed: ESP32 TX → heat pump RX, ESP32 RX ← heat pump TX. Unused shifter channels (`HV3`/`LV3`, `HV4`/`LV4`) can be left open.
+
+#### CN105 pinout
+
+The indoor-unit connector is a JST PA 5-pin header (housing [PAP-05V-S](https://www.digikey.com/en/products/detail/jst-sales-america-inc/PAP-05V-S/608655)). Pin 1 is typically nearest the board silkscreen `1` / the keyed edge of the housing.
+
+| Pin | Signal | Use |
+| --- | ------ | --- |
+| 1   | 12V    | Not used (leave empty) |
+| 2   | GND    | Ground |
+| 3   | 5V     | Power for the ESP32 `5V` pin and the shifter `HV` rail |
+| 4   | TX     | Data **from** the indoor unit (5V logic) → shifter HV → ESP32 RX |
+| 5   | RX     | Data **to** the indoor unit (5V logic) ← shifter HV ← ESP32 TX |
+
+> [!NOTE]
+> Some indoor units provide only limited current on the CN105 5V pin. Compact boards such as the XIAO series typically draw little enough to run from that rail. If the ESP32 brownouts, resets, or Wi-Fi is unstable, power it from the CN105 12V pin through a 5V regulator instead, and keep 12V off the ESP32 `5V` pin and GPIO.
+
+Connector part numbers and pre-crimped pigtails are listed in the [SwiCago/HeatPump README](https://github.com/SwiCago/HeatPump/blob/master/README.md#demo-circuit).
 
 ### Step 2: Using ESPHome
 
@@ -132,6 +176,17 @@ uart:
   rx_pin: 3
 ```
 
+> [!IMPORTANT]
+> **Logger UART vs CN105 UART.** ESPHome's `logger:` uses UART0 by default. If CN105 is wired to the same pins (typical ESP8266 `GPIO1`/`GPIO3`, and several ESP32 boards such as the M5Stack ATOM Lite), serial logs collide with heat-pump traffic and the unit looks “wired correctly but dead”. Move the logger off UART0:
+>
+> ```yaml
+> logger:
+>   hardware_uart: UART1  # ESP8266 *and* ESP32 when UART0 is used by CN105
+>   level: INFO
+> ```
+>
+> On ESP32-S3 boards that log over USB, `hardware_uart: USB_CDC` (often with `baud_rate: 0`) is the usual alternative. See issue #725.
+
 ### Step 4: Configure the climate component
 
 Add these sections to load the external component, setup logging, and enable the climate entity.
@@ -150,7 +205,7 @@ climate:
 
 # Default logging level
 logger:
-  #  hardware_uart: UART1 # Uncomment on ESP8266 devices
+  # hardware_uart: UART1  # Uncomment on ESP8266 *and* ESP32 if UART0 is used by CN105 (see #725)
   level: INFO
 ```
 
@@ -230,6 +285,7 @@ climate:
     # Various optional sensors, not all sensors are supported by all heatpumps
     compressor_frequency_sensor:
       name: Compressor Frequency
+      # report_when_idle: true     # set to false to report 0 Hz while this indoor unit is idle (filters noise on some models, e.g. PAA/PUZ)
       entity_category: diagnostic
       disabled_by_default: true
     outside_air_temperature_sensor:
@@ -293,6 +349,22 @@ climate:
       horizontal_vane_mode: ["←←", "←", "|", "→", "→→", SWING]
 ```
 
+#### Lossnay example
+
+Lossnay ventilation units can use the same component with the explicit `lossnay: true` option. Heat Recovery is exposed as `heat`, Bypass as `fan_only`, and Automatic as `auto`. Lossnay does not have a target temperature, swing, vane, compressor, or auxiliary-control packet. ESPHome climate entities always expose a target temperature; their traits cannot disable it. Any target-temperature control shown in Home Assistant has no effect on Lossnay and its commands are ignored.
+
+```yaml
+climate:
+  - platform: cn105
+    id: lossnay
+    name: Lossnay
+    uart_id: uart_lossnay
+    lossnay: true
+    supports:
+      mode: [AUTO, HEAT, FAN_ONLY]
+      fan_mode: [LOW, MEDIUM, MIDDLE, HIGH]
+```
+
 > [!TIP]
 > An `update_interval` between 1s and 4s is recommended, because the underlying process divides this into three separate requests which need time to complete. If some updates get "missed" from your heatpump, consider making this interval longer.
 
@@ -302,7 +374,7 @@ This firmware supports detailed log granularity for troubleshooting. Below is th
 
 ```yaml
 logger:
-  # hardware_uart: UART1 # Uncomment on ESP8266 devices
+  # hardware_uart: UART1  # Uncomment on ESP8266 *and* ESP32 if UART0 is used by CN105 (see #725)
   level: INFO
   logs:
     EVT_SETS: INFO
@@ -443,7 +515,7 @@ climate:
 
 logger:
 
-# hardware_uart: UART1 # Uncomment on ESP8266 devices
+# hardware_uart: UART1  # Uncomment on ESP8266 *and* ESP32 if UART0 is used by CN105 (see #725)
 
 level: INFO
 
@@ -531,7 +603,7 @@ captive_portal:
 
 # Enable logging
 logger:
-  #  hardware_uart: UART1 # Uncomment on ESP8266 devices
+  # hardware_uart: UART1  # Uncomment on ESP8266 *and* ESP32 if UART0 is used by CN105 (see #725)
   level: INFO
   logs:
     EVT_SETS: INFO
@@ -670,6 +742,7 @@ climate:
     # Various optional sensors, not all sensors are supported by all heatpumps
     compressor_frequency_sensor:
       name: Compressor Frequency
+      # report_when_idle: true     # set to false to report 0 Hz while this indoor unit is idle (filters noise on some models, e.g. PAA/PUZ)
       entity_category: diagnostic
       disabled_by_default: true
     outside_air_temperature_sensor:
@@ -917,7 +990,7 @@ auto_sub_mode_sensor:
   - `DEFROST` - a cold climate behavior that runs a short AC cycle during heating mode to melt ice from the coils
   - `STANDBY` - unit is off, or has been put into a "sleep" state through AUTO operation on another indoor unit
 
-Some examples of how these all fit together: Unit 1 is in AUTO set to 20C and Unit 2 is in AUTO and set to 20C. Unit 1 senses that the room is 24C and tries to enter `AUTO_COOL`. If Unit 2 wants to heat the room it is in, it will enter `STANDBY` (and in the case of a few units tested, this mean it will go to "sleep" as if it is off, but not really be off) making Unit 1 enter `AUTO_LEADER` sub mode. In future releases, it is planned to make the ACTION in HA match these modes. But at this time this is not implemented.
+Some examples of how these all fit together: Unit 1 is in AUTO set to 20C and Unit 2 is in AUTO and set to 20C. Unit 1 senses that the room is 24C and tries to enter `AUTO_COOL`. If Unit 2 wants to heat the room it is in, it will enter `STANDBY` (and in the case of a few units tested, this mean it will go to "sleep" as if it is off, but not really be off) making Unit 1 enter `AUTO_LEADER` sub mode. With ESPHome 2026.3.0 or newer, `DEFROST` is exposed to HA as the `defrosting` climate action. The other sub-modes are not currently mapped to HA climate actions.
 
 It is also important to note that the Kumo adapter has many more settings that impact the behaviour above (such as thermal fan behaviour) and if you have set these the exact actions the untis take in these modes/submodes/stages is determined by those. Some of these can also be set by remotes and other devices. The setup you have will dictate the exact actions you see. If you have permutations, please share!
 
@@ -968,6 +1041,33 @@ sensor:
       return (float) nbCompleteCycles / nbCycles * 100.0;
     update_interval: 60s
 ```
+
+### Polling-cycle state for advanced automations
+
+`id(hp).isCycleRunning()` returns the component's existing CN105 polling-cycle
+state. It is `true` between `cycleStarted()` and `cycleEnded()`, and `false`
+before a cycle starts or after it ends, including a timeout reset. This is the
+communication polling cycle, not the heat pump's heating/cooling action.
+
+This is useful when an advanced automation needs to observe the interval
+between polling cycles, for example before a model-specific UART action. It
+avoids guessing the cycle duration with fixed delays or maintaining a local
+component copy just to access this state. A connection-aware condition is:
+
+```yaml
+condition:
+  lambda: |-
+    return id(hp).isHeatpumpConnected() && !id(hp).isCycleRunning();
+```
+
+Use the climate component ID from your own configuration in place of `hp`.
+To observe a cycle ending, wait for the state to become `true`, then `false`,
+with appropriate timeout handling in the automation.
+
+The getter is a read-only snapshot. It does not reserve the UART, pause polling,
+queue a custom command, or confirm that a cycle completed successfully. Other
+component writes may occur outside a polling cycle, so custom UART operations
+still need their own coordination and response handling.
 
 ## Hardware Settings (Function Settings)
 

@@ -14,6 +14,8 @@ using namespace esphome;
 void CN105Climate::setup() {
 
     ESP_LOGD(TAG, "Component initialization: setup call");
+    ESP_LOGI(TAG, "CN105 protocol profile: 0x%02X (%s)", this->profile_->id(), this->profile_->name());
+    if (this->installer_mode_) this->profile_->allow_operation(cn105::ProfileFeature::INSTALLER_MODE);
     this->boot_ms_ = CUSTOM_MILLIS;
     this->current_temperature = NAN;
     this->target_temperature = NAN;
@@ -46,12 +48,12 @@ void CN105Climate::setup() {
     // We start the sequence in loop() to avoid missing the first OTA logs.
 
     // Initialize the internal flag based on the static configuration provided by YAML/Python
-    this->supports_dual_setpoint_ = this->traits_.has_feature_flags(climate::CLIMATE_REQUIRES_TWO_POINT_TARGET_TEMPERATURE);
+    this->supports_dual_setpoint_ = cn105_traits_requires_two_point(this->traits_);
     ESP_LOGI(TAG, "Dual setpoint support configured: %s", this->supports_dual_setpoint_ ? "YES" : "NO");
     ESP_LOGI(TAG, "Horizontal vanes configured: %d", this->horizontal_vanes_);
 
     // Restore a previously-saved HEAT_COOL band (opt-in) before the first settings read,
-    // so checkPowerAndModeSettings() keeps HEAT_COOL instead of falling back to AUTO.
+    // so the profile reconciliation keeps HEAT_COOL instead of falling back to AUTO.
     this->restore_setpoint_state_();
 }
 
@@ -63,6 +65,18 @@ void CN105Climate::setup() {
 void CN105Climate::loop() {
     // Bootstrap connection CN105 (UART + CONNECT) from loop()
     this->maybe_start_connection_();
+
+    // Inform user about report_when_idle property if not configured, but only if compressor frequency sensor is configured.
+    // Wait for UART to be ready so log messages appear via OTA update.
+    if (!this->compressor_frequency_report_when_idle_warning_shown_ &&
+        (this->compressor_frequency_sensor_ != nullptr) &&
+        (this->isUARTReady_())) {
+        ESP_LOGW("Decoder",
+            "Compressor frequency sensor configured in YAML without report_when_idle property. "
+            "It is recommended to set true for multi-head systems sharing an outdoor unit, "
+            "false for models with a noisy readings such as PAA/PUZ.");
+        this->compressor_frequency_report_when_idle_warning_shown_ = true;
+    }
 
     // As long as the connection is not successful, we do not launch ANY cycle/write (otherwise it short-circuits the delay).
     // We still continue to read/process the input in order to detect 0x7A/0x7B (connection success).
@@ -78,22 +92,28 @@ void CN105Climate::loop() {
             this->checkPendingWantedRunStates();
         } else if ((this->isSetFunctions_) && (!this->loopCycle.isCycleRunning())) {
             this->isSetFunctions_ = false;
-            this->setFunctions(this->functions);
-            // Also request to get function settings from heat pump to update UI with latest values.
-            this->isGetFunctions_ = true;
+            if (!this->profile_->allow_operation(cn105::ProfileFeature::AUXILIARY_CONTROLS)) {
+                this->isGetFunctions_ = false;
+            } else {
+                this->setFunctions(this->functions);
+                // Also request to get function settings from heat pump to update UI with latest values.
+                this->isGetFunctions_ = true;
+            }
         } else {
             if (this->loopCycle.isCycleRunning()) {                         // if we are  running an update cycle
                 this->loopCycle.checkTimeout(this->update_interval_);
             } else { // we are not running a cycle
                 if (this->loopCycle.hasUpdateIntervalPassed(this->get_update_interval())) {
                     if (this->isGetFunctions_) {
-                        // Reactivate requests 0x20/0x22 and bypass interval timers.
-                        // This must be done before starting a new cycle to prevent a race hazard of
-                        // request 0x22 occurring before request 0x20.
-                        this->scheduler_.enable_request(0x20);
-                        this->scheduler_.timer_bypass(0x20);
-                        this->scheduler_.enable_request(0x22);
-                        this->scheduler_.timer_bypass(0x22);
+                        if (this->profile_->allow_operation(cn105::ProfileFeature::AUXILIARY_CONTROLS)) {
+                            // Reactivate requests 0x20/0x22 and bypass interval timers.
+                            // This must be done before starting a new cycle to prevent a race hazard of
+                            // request 0x22 occurring before request 0x20.
+                            this->scheduler_.enable_request(0x20);
+                            this->scheduler_.timer_bypass(0x20);
+                            this->scheduler_.enable_request(0x22);
+                            this->scheduler_.timer_bypass(0x22);
+                        }
                         this->isGetFunctions_ = false;
                     }
                     this->buildAndSendRequestsInfoPackets();            // initiate an update cycle with this->cycleStarted();

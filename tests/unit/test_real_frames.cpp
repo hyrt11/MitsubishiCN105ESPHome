@@ -177,6 +177,14 @@ TEST(RealPower, LowStage) {
     EXPECT_STREQ(*lookup_value_opt(STAGE_MAP, STAGE, 7, data[4]), "LOW");
 }
 
+TEST(RealPower, OffSubMode_0x10) {
+    // Climate off: data[3] = 0x10 (decimal 16). Must resolve to OFF, not miss.
+    uint8_t data[] = {0x09,0x00,0x00,0x10,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00};
+    auto sub = lookup_value_opt(SUB_MODE_MAP, SUB_MODE, 6, data[3]);
+    ASSERT_TRUE(sub.has_value());
+    EXPECT_STREQ(*sub, "OFF");
+}
+
 // ════════════════════════════════════════════════════════════════
 // Remote temperature encoding — real SET packet
 // ════════════════════════════════════════════════════════════════
@@ -184,7 +192,7 @@ TEST(RealPower, LowStage) {
 TEST(RealRemoteTemp, Encode_22_8C) {
     uint8_t enc_a, enc_b;
     encode_remote_temperature(22.8f, enc_a, enc_b);
-    EXPECT_EQ(enc_a, 0x1E); // 46 - 16
+    EXPECT_EQ(enc_a, 0x1D); // 46 - 17
     EXPECT_EQ(enc_b, 0xAE); // 46 + 128
 }
 
